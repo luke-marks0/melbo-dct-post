@@ -61,17 +61,26 @@ class SlicedModel(nn.Module):
         return result
 
 class DeltaActivations(nn.Module):
-    def __init__(self, sliced_model, target_position_indices=slice(-3,None)):
+    def __init__(self, sliced_model, target_position_indices=slice(-3, None)):
         super().__init__()
         self.sliced_model = sliced_model
-        self.device = sliced_model.model.device
+        # Derive device from model parameters to ensure consistency
+        self.device = next(sliced_model.parameters()).device
         self.target_position_indices = target_position_indices
+
     def forward(self, theta, x, y):
-        '''
-        computes average delta in target layer activations as a 
-        function of bias theta
-        '''
-        delta = self.sliced_model(x+theta) - y # batch_size x seq_len x d_model
+        """
+        Computes average delta in target layer activations as a function of bias theta.
+        """
+        # Ensure theta is on the same device as x
+        if isinstance(theta, torch.Tensor):
+            if theta.device != x.device:
+                theta = theta.to(x.device)
+        else:
+            # Convert scalars/floats/ints or lists into a tensor
+            theta = torch.tensor(theta, dtype=x.dtype, device=x.device)
+
+        delta = self.sliced_model(x + theta) - y  # [batch_size, seq_len, d_model]
         delta = delta[:, self.target_position_indices, :]
         return delta.mean(dim=1)
 
