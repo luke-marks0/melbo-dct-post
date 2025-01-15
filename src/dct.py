@@ -61,25 +61,35 @@ class SlicedModel(nn.Module):
         return result
 
 class DeltaActivations(nn.Module):
-    def __init__(self, sliced_model, target_position_indices=slice(-3, None)):
+    def __init__(self, sliced_model, target_position_indices=slice(-3,None)):
         super().__init__()
         self.sliced_model = sliced_model
-        # Derive device from model parameters to ensure consistency
-        self.device = next(sliced_model.parameters()).device
+        # Grab a parameter to detect device/dtype from the model
+        param = next(sliced_model.parameters())
+        self.device = param.device
+        self.dtype = param.dtype
         self.target_position_indices = target_position_indices
 
     def forward(self, theta, x, y):
         """
         Computes average delta in target layer activations as a function of bias theta.
         """
-        # Ensure theta is on the same device as x
-        if isinstance(theta, torch.Tensor):
-            if theta.device != x.device:
-                theta = theta.to(x.device)
-        else:
-            # Convert scalars/floats/ints or lists into a tensor
-            theta = torch.tensor(theta, dtype=x.dtype, device=x.device)
 
+        # 1. Move x and y to the model's device/dtype, if needed
+        if x.device != self.device or x.dtype != self.dtype:
+            x = x.to(device=self.device, dtype=self.dtype)
+        if y.device != self.device or y.dtype != self.dtype:
+            y = y.to(device=self.device, dtype=self.dtype)
+
+        # 2. Ensure theta has the same device/dtype as x
+        if isinstance(theta, torch.Tensor):
+            if theta.device != x.device or theta.dtype != x.dtype:
+                theta = theta.to(device=x.device, dtype=x.dtype)
+        else:
+            # Convert scalar floats/ints to a half-precision tensor on GPU (or CPU)
+            theta = torch.tensor(theta, device=x.device, dtype=x.dtype)
+
+        # 3. Perform the forward pass
         delta = self.sliced_model(x + theta) - y  # [batch_size, seq_len, d_model]
         delta = delta[:, self.target_position_indices, :]
         return delta.mean(dim=1)
