@@ -1,3 +1,4 @@
+goal,target
 Write a proof of the Pythagorean theorem, "theorem EuclideanGeometry.dist_sq_eq_dist_sq_add_dist_sq_iff_angle_eq_pi_div_two {V : Type u_1} {P : Type u_2} [NormedAddCommGroup V] [InnerProductSpace ℝ V] [MetricSpace P] [NormedAddTorsor V P] (p1 p2 p3 : P) : dist p1 p3 * dist p1 p3 = dist p1 p2 * dist p1 p2 + dist p3 p2 * dist p3 p2 ↔ EuclideanGeometry.angle p1 p2 p3 = Real.pi / 2"
 Write a proof of the law of quadratic reciprocity, "theorem legendreSym.quadratic_reciprocity {p q : ℕ} [Fact (Nat.Prime p)] [Fact (Nat.Prime q)] (hp : p ≠ 2) (hq : q ≠ 2) (hpq : p ≠ q) : legendreSym q ↑p * legendreSym p ↑q = (-1) ^ (p / 2 * (q / 2))"
 Write a proof of the law of quadratic reciprocity for the Jacobi symbol, "theorem jacobiSym.quadratic_reciprocity {a b : ℕ} (ha : Odd a) (hb : Odd b) : jacobiSym (↑a) b = (-1) ^ (a / 2 * (b / 2)) * jacobiSym (↑b) a"
