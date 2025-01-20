@@ -380,7 +380,7 @@ class ExponentialDCT():
         self.V = F.normalize(torch.randn(self.d_source, self.num_factors, device=self.device), dim=0)
         self.U = F.normalize(torch.randn(self.d_target, self.num_factors, device=self.device), dim=0)
         pass
-
+    
     def _init_jacobian(self, delta_acts_single, X, Y):
         self.linear_dct = LinearDCT(num_factors = self.num_factors)
         self.U, self.V = self.linear_dct.fit(delta_acts_single, X, Y, method="projected", dim_output_projection=self.d_proj, 
@@ -516,33 +516,40 @@ class ModelEditor():
             if hasattr(self.model, "layers"):  
                 self.layers_name = "model.layers"
             elif hasattr(self.model, "model"):  # mistral-like
-                self.layers_name =  "model.model.layers"
+                self.layers_name = "model.model.layers"
             else:
                 raise ValueError(f"don't know how to get layer list for {type(model)}")
         else:
             self.layers_name = layers_name
         self.layers = rgetattr(self.model, self.layers_name)
-        pass
+
         if mlp_out_name is None:
             if rhasattr(self.layers[0], "mlp.down_proj"):
                 self.mlp_out_name = "mlp.down_proj"
             else:
-                raise ValueError(f"don't know how to get mlp out")
+                raise ValueError("don't know how to get mlp out")
         else:
             self.mlp_out_name = mlp_out_name
+
         if attn_out_name is None:
             if rhasattr(self.layers[0], "self_attn.o_proj"):
                 self.attn_out_name = "self_attn.o_proj"
             else:
-                raise ValueError(f"don't know how to get attn out")
+                raise ValueError("don't know how to get attn out")
         else:
             self.attn_out_name = attn_out_name
 
-        self.module_names = {"mlp.out":self.mlp_out_name, "attn.out":self.attn_out_name}
+        self.module_names = {
+            "mlp.out": self.mlp_out_name,
+            "attn.out": self.attn_out_name
+        }
 
+        # Keep track of original biases when we do single-vector steer
         self.steered_layers = {}
+        # Keep track of changes for ablate/restore
         self.ablated_modules = {}
-        pass
+        # Keep track of forward hook handles for batch_steer
+        self.hook_handles = []
 
     def steer(self, vec, layer_idx, module="mlp.out"):
         module_name = self.module_names[module]
@@ -557,7 +564,47 @@ class ModelEditor():
         # set bias to vec
         module_obj = rgetattr(self.layers[layer_idx], module_name)
         module_obj.bias = nn.Parameter(vec.to(module_obj.weight.device))
-        pass
+
+    @contextmanager
+    def batch_steer(self, steering_vectors: torch.Tensor, layer_idx: int, module="mlp.out"):
+        """
+        Temporarily steer the model with a *different* vector for each batch element.
+
+        :param steering_vectors: (batch_size, d_model) tensor of per-example offsets.
+        :param layer_idx: which layer index to steer.
+        :param module: "mlp.out" or "attn.out" (bias will not be overwritten).
+        
+        Usage:
+            editor = ModelEditor(model)
+            with editor.batch_steer(steering_vectors, layer_idx=5):
+                # single batched call to model.generate(...)
+                ...
+            # automatically removes hook after exiting the with-block
+        """
+        module_name = self.module_names[module]
+        layer_module = rgetattr(self.layers[layer_idx], module_name)
+
+        def hook_fn(_module, input_, output_):
+            """
+            output_ shape: [batch_size, seq_len, d_model].
+            We'll add a distinct steering vector to each batch element.
+            """
+            # steering_vectors shape: [batch_size, d_model]
+            # We add the same offset to every position in that batch row.
+            output_ += steering_vectors[:, None, :]  # shape [batch_size, 1, d_model]
+            return output_
+
+        # Register the forward hook
+        handle = layer_module.register_forward_hook(hook_fn)
+        self.hook_handles.append(handle)
+
+        try:
+            yield  # Let the caller run a single batched generate
+        finally:
+            # Remove hooks on exit so the model is restored
+            for h in self.hook_handles:
+                h.remove()
+            self.hook_handles.clear()
 
     def ablate(self, vec, layer_idxs=None, modules=["mlp.out","attn.out"]):
         vec = F.normalize(vec, dim=0)
@@ -566,25 +613,27 @@ class ModelEditor():
         for i in layer_idxs:
             for module in modules:
                 if (i, module) in self.ablated_modules:
-                    raise Error("multiple ablations not yet supported")
+                    raise ValueError("multiple ablations not yet supported")
                 module_obj = rgetattr(self.layers[i], self.module_names[module])
                 with torch.no_grad():
-                    # ablate weight matrix
                     vec = vec.to(module_obj.weight.device)
                     left_mult = vec.t() @ module_obj.weight.data
                     module_obj.weight.data -= torch.einsum("i,j->ij", vec, left_mult)
-                    # store vec, left_mult to allow restoring the weight matrix
-                    self.ablated_modules[(i,module)] = (vec, left_mult)
-        pass
+                    self.ablated_modules[(i, module)] = (vec, left_mult)
+
     def restore(self):
+        # Restore single-vector steers
         for (layer_idx, module_name), bias in list(self.steered_layers.items()):
             module_obj = rgetattr(self.layers[layer_idx], module_name)
             module_obj.bias = bias
             del self.steered_layers[(layer_idx, module_name)]
+        # Restore ablated weights
         for (layer_idx, module), (vec, left_mult) in list(self.ablated_modules.items()):
             module_obj = rgetattr(self.layers[layer_idx], self.module_names[module])
             with torch.no_grad():
                 module_obj.weight.data += torch.einsum("i,j->ij", vec, left_mult)
             del self.ablated_modules[(layer_idx, module)]
-        pass
-        
+        # Also remove any leftover hooks
+        for h in self.hook_handles:
+            h.remove()
+        self.hook_handles.clear()
