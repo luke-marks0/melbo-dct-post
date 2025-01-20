@@ -6,6 +6,7 @@ from torch.nn import functional as F
 from tqdm import tqdm
 import math
 from scipy.optimize import root_scalar
+from contextlib import contextmanager
 
 
 def rgetattr(obj, path):
